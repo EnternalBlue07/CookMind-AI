@@ -1,0 +1,8 @@
+{
+  "name": "CookMind AI",
+  "description": "An AI-powered smart cooking assistant that transforms thoughts into complete cooking plans, grocery lists, and step-by-step guidance.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
