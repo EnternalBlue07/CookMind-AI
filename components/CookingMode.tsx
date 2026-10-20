@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Recipe, CookingStep } from '../types';
-import { ArrowLeft, ArrowRight, Volume2, Timer, CheckCircle, Flame, Camera, X } from 'lucide-react';
-import { validateCookedDish } from '../services/geminiService';
+import { ArrowLeft, ArrowRight, Volume2, Timer, CheckCircle, Flame } from 'lucide-react';
 
 interface CookingModeProps {
   recipe: Recipe;
@@ -12,12 +11,6 @@ export const CookingMode: React.FC<CookingModeProps> = ({ recipe, onClose }) => 
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [timerActive, setTimerActive] = useState(false);
   const [timeLeft, setTimeLeft] = useState(0);
-  
-  // Verification State
-  const [showVerification, setShowVerification] = useState(false);
-  const [verificationImage, setVerificationImage] = useState<string | null>(null);
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<{ isValid: boolean; message: string } | null>(null);
 
   const currentStep: CookingStep = recipe.steps[currentStepIndex];
 
@@ -43,9 +36,6 @@ export const CookingMode: React.FC<CookingModeProps> = ({ recipe, onClose }) => 
     if (currentStepIndex < recipe.steps.length - 1) {
       setCurrentStepIndex(prev => prev + 1);
       setTimerActive(false);
-    } else {
-      // Last step, trigger verification
-      setShowVerification(true);
     }
   };
 
@@ -65,87 +55,6 @@ export const CookingMode: React.FC<CookingModeProps> = ({ recipe, onClose }) => 
       window.speechSynthesis.speak(utterance);
     }
   };
-
-  const handleVerificationUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64String = reader.result as string;
-        const base64Data = base64String.split(',')[1];
-        setVerificationImage(base64Data);
-        
-        // Auto verify
-        setIsVerifying(true);
-        const result = await validateCookedDish(base64Data, recipe.name);
-        setVerificationResult(result);
-        setIsVerifying(false);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  if (showVerification) {
-    return (
-      <div className="fixed inset-0 bg-slate-900 text-white z-50 flex flex-col items-center justify-center p-6">
-        <button onClick={() => setShowVerification(false)} className="absolute top-6 left-6 text-slate-400">
-           <ArrowLeft className="w-6 h-6" />
-        </button>
-        
-        <h2 className="text-3xl font-bold mb-2">Bon Appétit!</h2>
-        <p className="text-slate-400 mb-8 text-center max-w-xs">
-          To complete this cooking session, please verify your masterpiece.
-        </p>
-
-        {!verificationImage ? (
-           <label className="w-full max-w-xs aspect-square rounded-3xl border-2 border-dashed border-slate-600 flex flex-col items-center justify-center bg-slate-800 cursor-pointer hover:bg-slate-700 transition">
-              <Camera className="w-12 h-12 text-primary mb-4" />
-              <span className="font-bold">Upload Dish Photo</span>
-              <span className="text-xs text-slate-500 mt-2">Required for verification</span>
-              <input type="file" accept="image/*" className="hidden" onChange={handleVerificationUpload} />
-           </label>
-        ) : (
-           <div className="w-full max-w-xs rounded-3xl overflow-hidden bg-slate-800 border border-slate-700">
-              <img src={`data:image/jpeg;base64,${verificationImage}`} className="w-full h-48 object-cover" />
-              <div className="p-6 text-center">
-                 {isVerifying ? (
-                    <div className="flex flex-col items-center gap-2">
-                       <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                       <p className="text-sm font-bold">Verifying...</p>
-                    </div>
-                 ) : verificationResult ? (
-                    <div>
-                       {verificationResult.isValid ? (
-                         <div className="text-green-500 flex flex-col items-center gap-2">
-                            <CheckCircle className="w-10 h-10" />
-                            <p className="font-bold text-lg">Verified!</p>
-                            <p className="text-xs text-slate-400">{verificationResult.message}</p>
-                         </div>
-                       ) : (
-                         <div className="text-red-500 flex flex-col items-center gap-2">
-                            <X className="w-10 h-10" />
-                            <p className="font-bold text-lg">Not Verified</p>
-                            <p className="text-xs text-slate-400">{verificationResult.message}</p>
-                            <button onClick={() => setVerificationImage(null)} className="text-white text-xs underline mt-2">Try Again</button>
-                         </div>
-                       )}
-                    </div>
-                 ) : null}
-              </div>
-           </div>
-        )}
-        
-        {verificationResult?.isValid && (
-           <button 
-             onClick={onClose}
-             className="mt-8 bg-primary text-white px-8 py-4 rounded-full font-bold text-lg shadow-lg hover:bg-red-500 transition w-full max-w-xs"
-           >
-             Finish Cooking
-           </button>
-        )}
-      </div>
-    )
-  }
 
   return (
     <div className="fixed inset-0 bg-slate-900 text-white z-50 flex flex-col">
@@ -222,7 +131,8 @@ export const CookingMode: React.FC<CookingModeProps> = ({ recipe, onClose }) => 
 
           <button 
             onClick={nextStep}
-            className="p-4 rounded-full bg-primary hover:bg-red-500 text-white transition shadow-lg shadow-red-900/20"
+            disabled={currentStepIndex === recipe.steps.length - 1}
+            className="p-4 rounded-full bg-primary disabled:opacity-30 disabled:cursor-not-allowed hover:bg-red-500 text-white transition shadow-lg shadow-red-900/20"
           >
             {currentStepIndex === recipe.steps.length - 1 ? (
               <CheckCircle className="w-8 h-8" />
@@ -231,6 +141,9 @@ export const CookingMode: React.FC<CookingModeProps> = ({ recipe, onClose }) => 
             )}
           </button>
         </div>
+        <p className="text-center text-slate-500 text-xs mt-4">
+          Voice commands: "Next", "Repeat", "Timer" (Simulation)
+        </p>
       </div>
     </div>
   );

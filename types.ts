@@ -43,7 +43,8 @@ export enum AppView {
   ANALYSIS = 'ANALYSIS',
   COOKING = 'COOKING',
   INVENTORY = 'INVENTORY',
-  PROFILE = 'PROFILE'
+  PROFILE = 'PROFILE',
+  SHOPPING_LIST = 'SHOPPING_LIST'
 }
 
 export interface UserContext {

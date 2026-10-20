@@ -1,15 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Mic, Camera, ChefHat, 
-  Sparkles, ArrowRight, Plus, Minus,
+  Mic, Camera, Search, ChefHat, ShoppingCart, 
+  User, Sparkles, ArrowRight, Plus, Minus,
   Loader2, X, Info, Zap, Clock, Heart, Brain,
-  Flame, Leaf, BarChart3, GripHorizontal, ScanLine
+  Flame, Leaf, BarChart3, GripHorizontal, Check, Trash2
 } from 'lucide-react';
 import { Recipe, AppView, Ingredient } from './types';
-import { generateRecipeFromIntent, identifyIngredientsFromImage } from './services/geminiService';
+import { generateRecipeFromIntent } from './services/geminiService';
 import { NutritionChart } from './components/NutritionChart';
 import { CookingMode } from './components/CookingMode';
-import { InsightsDashboard } from './components/InsightsDashboard';
 
 const INITIAL_INVENTORY = ['Salt', 'Pepper', 'Oil', 'Onion', 'Tomato', 'Milk', 'Basmati Rice', 'Dal'];
 
@@ -17,13 +16,17 @@ const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<AppView>(AppView.HOME);
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const [isLoading, setIsListeningLoading] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState('Thinking...');
+  const [isLoading, setIsLoading] = useState(false);
   const [generatedRecipe, setGeneratedRecipe] = useState<Recipe | null>(null);
   const [inventory, setInventory] = useState<string[]>(INITIAL_INVENTORY);
   const [newInventoryItem, setNewInventoryItem] = useState('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   
+  // Shopping List State
+  const [shoppingList, setShoppingList] = useState<Ingredient[]>([]);
+  const [itemToAddToGrocery, setItemToAddToGrocery] = useState<Ingredient | null>(null);
+  const [groceryQuantity, setGroceryQuantity] = useState('');
+
   // --- Voice Input Logic ---
   const handleVoiceInput = () => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -64,44 +67,12 @@ const App: React.FC = () => {
     }
   };
 
-  const handleInventoryScan = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setIsListeningLoading(true);
-    setLoadingMessage("Scanning Fridge...");
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64String = reader.result as string;
-        const base64Data = base64String.split(',')[1];
-        const items = await identifyIngredientsFromImage(base64Data);
-        if (items.length > 0) {
-          // Add only unique items
-          const newItems = items.filter(i => !inventory.map(inv => inv.toLowerCase()).includes(i.toLowerCase()));
-          setInventory(prev => [...prev, ...newItems]);
-          alert(`Found: ${newItems.join(", ")}`);
-        } else {
-          alert("Couldn't identify food items clearly.");
-        }
-      } catch (e) {
-        console.error(e);
-        alert("Scan failed.");
-      } finally {
-        setIsListeningLoading(false);
-        setLoadingMessage("Thinking...");
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
   // --- Core Generation Logic ---
   const handleGenerate = async (overrideInput?: string) => {
     const textToUse = overrideInput || inputText;
     if (!textToUse && !selectedImage) return;
     
-    setIsListeningLoading(true);
-    setLoadingMessage("Cooking up a plan...");
+    setIsLoading(true);
     try {
       const recipe = await generateRecipeFromIntent(textToUse, selectedImage, inventory);
       setGeneratedRecipe(recipe);
@@ -110,20 +81,45 @@ const App: React.FC = () => {
       console.error(error);
       alert("CookMind couldn't analyze that. Please check your API Key or try again.");
     } finally {
-      setIsListeningLoading(false);
-      setLoadingMessage("Thinking...");
+      setIsLoading(false);
     }
   };
 
   // --- Helper: Smart Inventory Check ---
+  // Combines AI's "inInventory" flag with a client-side fuzzy check
+  // to handle cases where user adds items AFTER generation.
   const checkInventoryStatus = (ingredient: Ingredient): boolean => {
+    // 1. Trust AI first (if strictly true)
     if (ingredient.inInventory) return true;
-    const normalize = (str: string) => str.toLowerCase().replace(/s$/, '').trim();
+
+    // 2. Client-side fuzzy fallback
+    const normalize = (str: string) => str.toLowerCase().replace(/s$/, '').trim(); // Remove trailing 's'
     const target = normalize(ingredient.name);
+    
     return inventory.some(item => {
       const inv = normalize(item);
+      // Check for substring matches (e.g. "Chopped Onion" matches "Onion")
       return inv.includes(target) || target.includes(inv);
     });
+  };
+
+  // --- Helper: Check Shopping List ---
+  const isInShoppingList = (ingredientName: string) => {
+    return shoppingList.some(item => item.name === ingredientName);
+  };
+
+  // --- Handlers for Grocery Modal ---
+  const openGroceryModal = (ingredient: Ingredient) => {
+    setItemToAddToGrocery(ingredient);
+    setGroceryQuantity(ingredient.quantity);
+  };
+
+  const confirmAddToGrocery = () => {
+    if (itemToAddToGrocery) {
+      setShoppingList(prev => [...prev, { ...itemToAddToGrocery, quantity: groceryQuantity }]);
+      setItemToAddToGrocery(null);
+      setGroceryQuantity('');
+    }
   };
 
   // --- Render Functions ---
@@ -132,12 +128,13 @@ const App: React.FC = () => {
     const hour = new Date().getHours();
     const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
     
+    // Mock AI Intelligence Metrics
     const kitchenReadiness = Math.min(Math.round((inventory.length / 10) * 100), 85); 
     const possibleDishes = Math.floor(inventory.length * 1.8);
     const lowStock = Math.floor(Math.random() * 3);
 
     return (
-      <div className="flex flex-col p-5 max-w-md mx-auto w-full pt-8">
+      <div className="flex flex-col h-full p-5 max-w-md mx-auto w-full pt-10 pb-24 overflow-y-auto no-scrollbar">
         {/* HERO SECTION */}
         <header className="mb-6">
           <div className="flex justify-between items-end mb-2">
@@ -210,7 +207,7 @@ const App: React.FC = () => {
               </div>
            </div>
            
-           {/* Image Upload Trigger */}
+           {/* Image Upload Trigger - Subtle */}
            {selectedImage ? (
              <div className="mt-3 flex items-center gap-2 bg-slate-100 p-2 rounded-xl text-xs font-medium text-slate-600">
                 <img src={`data:image/jpeg;base64,${selectedImage}`} className="w-8 h-8 rounded-lg object-cover" />
@@ -304,6 +301,35 @@ const App: React.FC = () => {
              <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-3xl"></div>
           </div>
         </div>
+
+        {/* LIVE KITCHEN SNAPSHOT */}
+        <div>
+          <div className="flex justify-between items-center mb-3 ml-1">
+             <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Kitchen Snapshot</p>
+             <button onClick={() => setCurrentView(AppView.INVENTORY)} className="text-xs text-primary font-bold">Manage</button>
+          </div>
+          <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+             <div className="flex flex-wrap gap-2 mb-4">
+               {inventory.slice(0, 5).map((item, idx) => (
+                 <span key={idx} className="px-2 py-1 bg-slate-50 text-slate-600 rounded text-xs font-medium border border-slate-100">
+                    {item}
+                 </span>
+               ))}
+               {inventory.length > 5 && <span className="px-2 py-1 text-slate-400 text-xs">+{inventory.length - 5} more</span>}
+             </div>
+             
+             {/* The "Hook" */}
+             <div className="flex items-start gap-3 pt-3 border-t border-slate-50">
+               <div className="bg-orange-100 p-2 rounded-lg text-orange-600">
+                 <ShoppingCart className="w-4 h-4" />
+               </div>
+               <div>
+                  <p className="text-sm text-dark font-medium">You're 1 ingredient away from <span className="font-bold">Paneer Tikka</span>.</p>
+                  <p className="text-xs text-slate-400 mt-1">Missing: <span className="text-red-500">Capsicum</span> (₹20 est)</p>
+               </div>
+             </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -311,10 +337,11 @@ const App: React.FC = () => {
   const renderAnalysis = () => {
     if (!generatedRecipe) return null;
 
+    // Use helper to determine missing ingredients
     const missingIngredients = generatedRecipe.ingredients.filter(i => !checkInventoryStatus(i));
 
     return (
-      <div className="flex flex-col bg-slate-50 min-h-full">
+      <div className="flex flex-col h-full bg-slate-50 pb-20 overflow-y-auto no-scrollbar">
         {/* Hero Image / Title */}
         <div className="bg-white p-6 pb-8 rounded-b-[2.5rem] shadow-sm z-10 relative">
           <button onClick={() => setCurrentView(AppView.HOME)} className="absolute top-6 left-6 p-2 bg-slate-100 rounded-full hover:bg-slate-200">
@@ -327,22 +354,6 @@ const App: React.FC = () => {
             </div>
             <p className="text-slate-500 mb-4">{generatedRecipe.description}</p>
             
-            {generatedRecipe.tips && generatedRecipe.tips.length > 0 && (
-               <div className="mb-5 bg-amber-50 border border-amber-100 p-4 rounded-xl">
-                  <h3 className="text-xs font-bold text-amber-600 uppercase tracking-wide mb-2 flex items-center gap-1">
-                    <Flame className="w-3 h-3" /> Chef's Tips
-                  </h3>
-                  <ul className="space-y-1.5">
-                    {generatedRecipe.tips.map((tip, idx) => (
-                      <li key={idx} className="text-sm text-slate-700 leading-relaxed flex items-start gap-2">
-                        <span className="mt-1.5 w-1 h-1 bg-amber-400 rounded-full shrink-0"></span>
-                        {tip}
-                      </li>
-                    ))}
-                  </ul>
-               </div>
-            )}
-
             <div className="flex gap-4 text-sm text-slate-600 font-medium">
                <span className="flex items-center gap-1"><span className="text-primary">⏱</span> {generatedRecipe.prepTime} Prep</span>
                <span className="flex items-center gap-1"><span className="text-primary">🔥</span> {generatedRecipe.cookTime} Cook</span>
@@ -351,8 +362,10 @@ const App: React.FC = () => {
         </div>
 
         <div className="p-6 space-y-6">
+          {/* Nutrition */}
           <NutritionChart data={generatedRecipe.nutrition} />
 
+          {/* Grocery / Ingredients */}
           <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
              <div className="flex items-center justify-between mb-4">
                 <h3 className="font-bold text-lg text-dark">Ingredients</h3>
@@ -362,6 +375,7 @@ const App: React.FC = () => {
              <div className="space-y-3">
                {generatedRecipe.ingredients.map((ing, idx) => {
                  const hasIt = checkInventoryStatus(ing);
+                 const inList = isInShoppingList(ing.name);
                  
                  return (
                    <div key={idx} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
@@ -381,6 +395,7 @@ const App: React.FC = () => {
                             {ing.quantity}
                         </span>
 
+                        {/* Show substitute prominently if missing */}
                         {!hasIt && ing.substitute && (
                              <span className="text-xs text-orange-500 bg-orange-50 px-2 py-1 rounded w-fit flex items-center gap-1">
                                 <Info className="w-3 h-3" /> Substitute: {ing.substitute}
@@ -391,7 +406,14 @@ const App: React.FC = () => {
                       {hasIt ? (
                         <span className="text-secondary text-xs font-bold bg-secondary/10 px-2 py-1 rounded">HAVE</span>
                       ) : (
-                        <span className="text-red-400 text-xs font-bold bg-red-50 px-2 py-1 rounded">MISSING</span>
+                        <button 
+                           onClick={() => !inList && openGroceryModal(ing)}
+                           disabled={inList}
+                           className={`text-xs font-bold px-3 py-2 rounded-lg flex items-center gap-1 shadow-sm transition-colors ${inList ? 'bg-green-100 text-green-700' : 'text-white bg-dark hover:bg-black'}`}
+                        >
+                           {inList ? <Check className="w-3 h-3" /> : <ShoppingCart className="w-3 h-3" />}
+                           {inList ? 'IN LIST' : 'ADD'}
+                        </button>
                       )}
                    </div>
                  )
@@ -416,37 +438,31 @@ const App: React.FC = () => {
   };
 
   const renderInventory = () => (
-    <div className="p-6 pt-12 max-w-md mx-auto w-full flex flex-col">
+    <div className="p-6 pt-12 max-w-md mx-auto w-full flex flex-col h-full">
       <h2 className="text-3xl font-bold mb-6 text-dark">Smart Pantry</h2>
       
-      <div className="flex gap-3 mb-6">
-        <label className="bg-primary text-white p-3 rounded-xl cursor-pointer hover:bg-red-500 transition shadow-lg shadow-red-500/20">
-          <ScanLine className="w-6 h-6" />
-          <input type="file" accept="image/*" className="hidden" onChange={handleInventoryScan} />
-        </label>
-        <div className="flex-1 flex gap-2">
-          <input 
-            type="text" 
-            value={newInventoryItem}
-            onChange={(e) => setNewInventoryItem(e.target.value)}
-            placeholder="Add item"
-            className="flex-1 bg-white border border-slate-200 p-3 rounded-xl outline-none focus:border-primary"
-          />
-          <button 
-            onClick={() => {
-              if (newInventoryItem) {
-                setInventory([...inventory, newInventoryItem]);
-                setNewInventoryItem('');
-              }
-            }}
-            className="bg-dark text-white p-3 rounded-xl"
-          >
-            <Plus className="w-6 h-6" />
-          </button>
-        </div>
+      <div className="flex gap-2 mb-6">
+        <input 
+          type="text" 
+          value={newInventoryItem}
+          onChange={(e) => setNewInventoryItem(e.target.value)}
+          placeholder="Add item (e.g., Basil)"
+          className="flex-1 bg-white border border-slate-200 p-3 rounded-xl outline-none focus:border-primary"
+        />
+        <button 
+          onClick={() => {
+            if (newInventoryItem) {
+              setInventory([...inventory, newInventoryItem]);
+              setNewInventoryItem('');
+            }
+          }}
+          className="bg-dark text-white p-3 rounded-xl"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex-1">
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex-1 overflow-y-auto">
         {inventory.map((item, idx) => (
           <div key={idx} className="flex items-center justify-between p-4 border-b border-slate-50 last:border-0">
              <span className="font-medium text-slate-700">{item}</span>
@@ -462,15 +478,54 @@ const App: React.FC = () => {
     </div>
   );
 
-  return (
-    <div className="bg-[#F7F9F9] h-[100dvh] w-full font-sans text-slate-800 relative overflow-hidden flex flex-col">
+  const renderShoppingList = () => (
+    <div className="p-6 pt-12 max-w-md mx-auto w-full flex flex-col h-full">
+      <h2 className="text-3xl font-bold mb-2 text-dark">Smart Buy List</h2>
+      <p className="text-slate-400 mb-6">Generated from your recipe needs.</p>
       
-      {/* Content Area - Single Scroll Container */}
-      <main className="flex-1 overflow-y-auto no-scrollbar pb-24">
+      {shoppingList.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-400">
+           <ShoppingCart className="w-12 h-12 mb-4 opacity-50" />
+           <p>Your list is empty.</p>
+           <p className="text-sm mt-2">Generate a recipe and add missing ingredients!</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex-1 overflow-y-auto">
+          {shoppingList.map((item, idx) => (
+            <div key={idx} className="flex items-center justify-between p-4 border-b border-slate-50 last:border-0">
+               <div className="flex flex-col">
+                  <span className="font-medium text-slate-800">{item.name}</span>
+                  <span className="text-xs text-slate-500">{item.quantity} {item.estimatedCost && `• ${item.estimatedCost}`}</span>
+               </div>
+               <button 
+                  onClick={() => setShoppingList(shoppingList.filter(i => i !== item))}
+                  className="text-slate-300 hover:text-red-500"
+               >
+                 <Trash2 className="w-5 h-5" />
+               </button>
+            </div>
+          ))}
+          {/* Total Estimate Footer */}
+          <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
+             <p className="text-sm font-bold text-dark">
+                Items: {shoppingList.length}
+             </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="bg-[#F7F9F9] h-screen w-full font-sans text-slate-800 relative overflow-hidden">
+      
+      {/* Content Area */}
+      <main className="h-full pb-20 overflow-y-auto no-scrollbar">
         {currentView === AppView.HOME && renderHome()}
         {currentView === AppView.ANALYSIS && renderAnalysis()}
         {currentView === AppView.INVENTORY && renderInventory()}
-        {currentView === AppView.PROFILE && <InsightsDashboard />}
+        {currentView === AppView.SHOPPING_LIST && renderShoppingList()}
+        {currentView === AppView.PROFILE && <div className="p-10 text-center text-slate-400">Insights & Health Goals (Coming Soon)</div>}
       </main>
 
       {/* Full Screen Overlays */}
@@ -478,21 +533,68 @@ const App: React.FC = () => {
         <CookingMode recipe={generatedRecipe} onClose={() => setCurrentView(AppView.ANALYSIS)} />
       )}
 
+      {/* Grocery Add Confirmation Modal */}
+      {itemToAddToGrocery && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl transform transition-all scale-100">
+             <div className="flex justify-between items-start mb-4">
+                <div>
+                   <h3 className="text-xl font-bold text-dark">Add to Smart Buy</h3>
+                   <p className="text-sm text-slate-400">Verify details before adding</p>
+                </div>
+                <button onClick={() => setItemToAddToGrocery(null)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X className="w-4 h-4"/></button>
+             </div>
+             
+             <div className="bg-slate-50 p-4 rounded-xl mb-6">
+                <p className="text-xs font-bold text-slate-400 uppercase mb-1">Ingredient</p>
+                <p className="text-lg font-bold text-dark mb-3">{itemToAddToGrocery.name}</p>
+                
+                <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Quantity Needed</label>
+                <input 
+                  type="text" 
+                  value={groceryQuantity}
+                  onChange={(e) => setGroceryQuantity(e.target.value)}
+                  className="w-full bg-white border border-slate-200 p-3 rounded-lg font-medium text-slate-700 outline-none focus:border-primary"
+                />
+                
+                {itemToAddToGrocery.estimatedCost && (
+                   <p className="text-xs text-right mt-2 text-slate-500">Est. Cost: <span className="font-bold text-dark">{itemToAddToGrocery.estimatedCost}</span></p>
+                )}
+             </div>
+
+             <div className="flex gap-3">
+               <button 
+                 onClick={() => setItemToAddToGrocery(null)}
+                 className="flex-1 py-3 text-slate-600 font-bold hover:bg-slate-100 rounded-xl transition"
+               >
+                 Cancel
+               </button>
+               <button 
+                 onClick={confirmAddToGrocery}
+                 className="flex-1 py-3 bg-dark text-white font-bold rounded-xl shadow-lg hover:bg-black transition flex justify-center items-center gap-2"
+               >
+                 <ShoppingCart className="w-4 h-4" /> Add to List
+               </button>
+             </div>
+          </div>
+        </div>
+      )}
+
       {/* Loading Overlay */}
       {isLoading && (
          <div className="fixed inset-0 bg-white/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center">
             <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
-            <p className="text-dark font-bold text-lg">{loadingMessage}</p>
-            <p className="text-slate-400 text-sm">CookMind is working</p>
+            <p className="text-dark font-bold text-lg">Thinking...</p>
+            <p className="text-slate-400 text-sm">Analyzing ingredients & nutrition</p>
          </div>
       )}
 
-      {/* Static Bottom Navigation */}
+      {/* Bottom Navigation */}
       {currentView !== AppView.COOKING && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-200 px-6 py-4 flex justify-between items-center z-40 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-4 flex justify-between items-center z-40 pb-safe">
           <button 
              onClick={() => setCurrentView(AppView.HOME)}
-             className={`flex flex-col items-center gap-1 transition-all duration-200 ${currentView === AppView.HOME || currentView === AppView.ANALYSIS ? 'text-primary scale-110' : 'text-slate-400 hover:text-slate-600'}`}
+             className={`flex flex-col items-center gap-1 ${currentView === AppView.HOME || currentView === AppView.ANALYSIS ? 'text-primary' : 'text-slate-400'}`}
           >
             <GripHorizontal className="w-6 h-6" />
             <span className="text-[10px] font-bold">Command</span>
@@ -500,19 +602,33 @@ const App: React.FC = () => {
           
           <button 
              onClick={() => setCurrentView(AppView.INVENTORY)}
-             className={`flex flex-col items-center gap-1 transition-all duration-200 ${currentView === AppView.INVENTORY ? 'text-primary scale-110' : 'text-slate-400 hover:text-slate-600'}`}
+             className={`flex flex-col items-center gap-1 ${currentView === AppView.INVENTORY ? 'text-primary' : 'text-slate-400'}`}
           >
             <div className="relative">
               <ChefHat className="w-6 h-6" />
-              {/* Optional notification dot */}
               <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border border-white"></span>
             </div>
             <span className="text-[10px] font-bold">Kitchen</span>
           </button>
 
           <button 
+             onClick={() => setCurrentView(AppView.SHOPPING_LIST)} 
+             className={`flex flex-col items-center gap-1 ${currentView === AppView.SHOPPING_LIST ? 'text-primary' : 'text-slate-400'}`}
+          >
+            <div className="relative">
+              <ShoppingCart className="w-6 h-6" />
+              {shoppingList.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border border-white text-[9px] text-white flex items-center justify-center font-bold">
+                  {shoppingList.length}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] font-bold">Smart Buy</span>
+          </button>
+
+          <button 
              onClick={() => setCurrentView(AppView.PROFILE)}
-             className={`flex flex-col items-center gap-1 transition-all duration-200 ${currentView === AppView.PROFILE ? 'text-primary scale-110' : 'text-slate-400 hover:text-slate-600'}`}
+             className={`flex flex-col items-center gap-1 ${currentView === AppView.PROFILE ? 'text-primary' : 'text-slate-400'}`}
           >
             <BarChart3 className="w-6 h-6" />
             <span className="text-[10px] font-bold">Insights</span>

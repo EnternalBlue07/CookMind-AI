@@ -1,8 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Recipe } from "../types";
 
-// --- Schemas ---
-
+// Define the strict schema for the recipe output
+// We use 'any' for the type annotation here to avoid import issues if Schema is not exported as a value
 const recipeSchema: any = {
   type: Type.OBJECT,
   properties: {
@@ -14,11 +14,6 @@ const recipeSchema: any = {
     servings: { type: Type.NUMBER, description: "Number of people" },
     costEstimate: { type: Type.STRING, description: "Estimated total cost range in INR" },
     regionalStyle: { type: Type.STRING, description: "Region or style (e.g. Punjabi)" },
-    tips: { 
-      type: Type.ARRAY, 
-      items: { type: Type.STRING }, 
-      description: "List of 2-3 chef's tips or variations for the dish." 
-    },
     ingredients: {
       type: Type.ARRAY,
       items: {
@@ -68,99 +63,49 @@ const recipeSchema: any = {
   required: ["name", "ingredients", "steps", "nutrition", "difficulty"],
 };
 
-const inventorySchema: any = {
-  type: Type.OBJECT,
-  properties: {
-    ingredients: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING },
-          quantity: { type: Type.STRING, enum: ["low", "medium", "high"] },
-          confidence: { type: Type.NUMBER }
-        },
-        required: ["name", "quantity", "confidence"]
-      }
-    }
-  },
-  required: ["ingredients"]
-};
-
-const dishVerificationSchema: any = {
-  type: Type.OBJECT,
-  properties: {
-    is_valid: { type: Type.BOOLEAN },
-    confidence: { type: Type.NUMBER },
-    portion: { type: Type.STRING, enum: ["small", "medium", "large"] },
-    notes: { type: Type.STRING }
-  },
-  required: ["is_valid", "confidence", "notes"]
-};
-
-// --- Helper for API Initialization ---
-const getAI = () => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key is missing.");
-  }
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
-};
-
-// --- Helper for Text Cleaning ---
-const cleanAndParseJSON = (text: string) => {
-  try {
-    // Remove markdown code blocks if present
-    const cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleaned);
-  } catch (error) {
-    console.error("JSON Parsing Error:", error, "Raw Text:", text);
-    throw new Error("Failed to parse AI response as JSON.");
-  }
-};
-
-// --- Core Services ---
-
 export const generateRecipeFromIntent = async (
   input: string,
   imageBase64: string | null,
   inventoryItems: string[]
 ): Promise<Recipe> => {
-  const ai = getAI();
-  const isImageRequest = !!imageBase64;
-  const modelName = isImageRequest ? "gemini-2.5-flash-image" : "gemini-3-flash-preview";
-
-  let systemInstruction = `
-    You are CookMind AI — a Living Kitchen Intelligence System.
-    
-    Your purpose:
-    - Understand the user’s kitchen state.
-    - Never hallucinate ingredients.
-    - Never count food without visual proof.
-    - Speak naturally (English / Hindi / Hinglish).
-    - Adapt to user habits, health, and context.
-
-    Core Rules:
-    1. NEVER suggest a dish requiring unavailable ingredients unless it's a minor staple (salt, oil).
-    2. ALWAYS prefer simpler, healthier options if multiple exist.
-    3. Speak like a human kitchen assistant, not a recipe book.
-    4. If the user input suggests Hinglish, respond in a casual, friendly Hinglish tone.
-
-    Context:
-    - User Inventory: ${inventoryItems.join(", ")}.
-    
-    CRITICAL INVENTORY MATCHING:
-    - Cross-reference ingredients with the inventory list.
-    - Set "inInventory" to TRUE for matches (exact, partial, synonym).
-  `;
-
-  // For image models, we must provide the schema in the prompt as they don't support JSON mode config
-  if (isImageRequest) {
-    systemInstruction += `\n\nOutput strictly valid JSON matching this schema structure:\n${JSON.stringify(recipeSchema, null, 2)}`;
-  } else {
-    systemInstruction += `\n\nOutput JSON strictly following the provided schema.`;
+  if (!process.env.API_KEY) {
+    throw new Error("API Key is missing.");
   }
 
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  // Choose model based on input type
+  // Use gemini-2.5-flash-image if image is present, otherwise gemini-3-flash-preview
+  const modelName = imageBase64 ? "gemini-2.5-flash-image" : "gemini-3-flash-preview";
+
+  const systemInstruction = `
+    You are CookMind AI, an elite cooking intelligence system.
+    Your goal is to understand the user's food intent and generate a structured recipe.
+    
+    Context:
+    - The user has these items in their kitchen: ${inventoryItems.join(", ")}. 
+    
+    CRITICAL INVENTORY MATCHING INSTRUCTIONS:
+    1. Cross-reference every ingredient in your generated recipe with the user's kitchen inventory list.
+    2. Set "inInventory" to TRUE if:
+       - Exact match (e.g., "Onion" matches "Onion").
+       - Plural/Singular match (e.g., "Tomatoes" matches "Tomato").
+       - Synonym match (e.g., "Cilantro" matches "Coriander", "Aubergine" matches "Brinjal").
+       - Component match (e.g., "Lemon Juice" matches "Lemon").
+    3. QUANTITY CHECK: If the recipe requires a significant amount (e.g., "1kg Chicken") but the inventory implies a standard household amount (or user specified small quantity), use your best judgment. Generally, assume standard pantry staples (salt, oil, spices) are sufficient.
+    
+    Prioritize using inventory items in the recipe to reduce waste.
+    If the user provides a dish name, generate a recipe for it.
+    If the user provides a vague idea (e.g. "I'm hungry and have potatoes"), suggest a creative dish.
+    If an image is provided, identify the ingredients or dish in the image and generate a recipe based on that.
+    
+    Output JSON following the provided schema strictly.
+    Ensure "steps" are clear, actionable, and include specific "tips" like a professional chef.
+    Calculate nutrition estimates and approximate ingredient costs in INR accurately.
+  `;
+
   const parts: any[] = [];
+  
   if (imageBase64) {
     parts.push({
       inlineData: {
@@ -173,125 +118,30 @@ export const generateRecipeFromIntent = async (
     parts.push({ text: input });
   }
 
-  const reqConfig: any = {
-    systemInstruction: systemInstruction,
-  };
-
-  // Only enable JSON mode for non-image models
-  if (!isImageRequest) {
-    reqConfig.responseMimeType = "application/json";
-    reqConfig.responseSchema = recipeSchema;
-  }
-
   try {
     const response = await ai.models.generateContent({
       model: modelName,
-      contents: { role: "user", parts: parts },
-      config: reqConfig,
+      contents: {
+        role: "user",
+        parts: parts,
+      },
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: recipeSchema,
+      },
     });
 
-    const text = response.text;
+    let text = response.text;
     if (!text) throw new Error("No response from AI");
-    
-    const parsed = cleanAndParseJSON(text);
+
+    // Clean markdown code blocks if present
+    text = text.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+
+    const parsed = JSON.parse(text);
     return { ...parsed, id: crypto.randomUUID() };
   } catch (error) {
     console.error("Gemini API Error:", error);
     throw error;
-  }
-};
-
-export const identifyIngredientsFromImage = async (imageBase64: string): Promise<string[]> => {
-  const ai = getAI();
-  const modelName = "gemini-2.5-flash-image";
-
-  // Embed schema in prompt for image model
-  const systemInstruction = `
-    You are a computer vision enabled kitchen assistant.
-    Task:
-    1. Detect all visible food ingredients in the image (fridge, shelf, or countertop).
-    2. Ignore utensils, containers, and non-food items.
-    3. Output ONLY items reasonably visible.
-    4. Be conservative (do not guess hidden items).
-    
-    Output strictly valid JSON matching this schema:
-    ${JSON.stringify(inventorySchema, null, 2)}
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType: "image/jpeg", data: imageBase64 } },
-          { text: "Identify the ingredients in this image." }
-        ]
-      },
-      config: {
-        systemInstruction: systemInstruction,
-        // responseMimeType: "application/json" is NOT supported for gemini-2.5-flash-image
-      },
-    });
-
-    const text = response.text;
-    if (!text) return [];
-    
-    const parsed = cleanAndParseJSON(text);
-    // Return just the names for the simple inventory list
-    return parsed.ingredients.map((i: any) => i.name);
-  } catch (error) {
-    console.error("Inventory Scan Error:", error);
-    return [];
-  }
-};
-
-export const validateCookedDish = async (
-  imageBase64: string,
-  recipeName: string
-): Promise<{ isValid: boolean; message: string }> => {
-  const ai = getAI();
-  const modelName = "gemini-2.5-flash-image";
-
-  const systemInstruction = `
-    You are a food image verification AI.
-    Input: Image of cooked dish and Selected Recipe Name.
-    
-    Tasks:
-    1. Confirm this is food.
-    2. Check if it reasonably matches the selected recipe: "${recipeName}".
-    3. Detect if image is valid (not raw ingredients, not stock photo).
-    
-    Output strictly valid JSON matching this schema:
-    ${JSON.stringify(dishVerificationSchema, null, 2)}
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType: "image/jpeg", data: imageBase64 } },
-          { text: `Verify this dish against the recipe: ${recipeName}` }
-        ]
-      },
-      config: {
-        systemInstruction: systemInstruction,
-        // responseMimeType: "application/json" is NOT supported for gemini-2.5-flash-image
-      },
-    });
-
-    const text = response.text;
-    if (!text) return { isValid: false, message: "Could not verify image." };
-    
-    const parsed = cleanAndParseJSON(text);
-    return { 
-      isValid: parsed.is_valid, 
-      message: parsed.notes || (parsed.is_valid ? "Great job! Dish verified." : "Doesn't look like the recipe.") 
-    };
-  } catch (error) {
-    console.error("Dish Verification Error:", error);
-    return { isValid: false, message: "Verification failed due to an error." };
   }
 };
